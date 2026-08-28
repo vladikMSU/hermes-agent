@@ -190,6 +190,33 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
     assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
 
 
+def test_dashboard_task_drawer_is_addressable_from_the_url():
+    """Kanban task links must open a drawer and manual opens must become links."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text(encoding="utf-8")
+
+    assert "function readKanbanRoute()" in js
+    assert "function writeKanbanRoute(board, task, mode)" in js
+    assert "const initialRoute = useMemo(readKanbanRoute, []);" in js
+    assert "const [board, setBoard] = useState(() => initialRoute.board || readSelectedBoard() || null);" in js
+    assert "const [selectedTaskId, setSelectedTaskId] = useState(() => initialRoute.task);" in js
+    assert "window.addEventListener(\"popstate\", syncTaskFromRoute);" in js
+    assert "setBoard(route.board);" in js
+    assert "const currentState = window.history.state;" in js
+    assert "window.history.pushState(nextState, \"\", next);" in js
+    assert "window.history.replaceState(currentState, \"\", next);" in js
+    assert "window.history.pushState(null" not in js
+    assert "window.history.replaceState(null" not in js
+    assert "writeKanbanRoute(board, taskId, \"push\");" in js
+    assert "writeKanbanRoute(board, null, \"replace\");" in js
+    assert "writeKanbanRoute(nextSlug, null, \"replace\");" in js
+    assert "onOpen: openTask" in js
+    assert "onClose: closeTask" in js
+    assert "onOpenTask: openTask" in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------

@@ -301,6 +301,29 @@
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
+  function readKanbanRoute() {
+    const params = new URLSearchParams(window.location.search || "");
+    const board = (params.get("board") || "").trim() || null;
+    const task = (params.get("task") || "").trim() || null;
+    return { board: board, task: task };
+  }
+
+  function writeKanbanRoute(board, task, mode) {
+    const url = new URL(window.location.href);
+    if (board) url.searchParams.set("board", board);
+    else url.searchParams.delete("board");
+    if (task) url.searchParams.set("task", task);
+    else url.searchParams.delete("task");
+    const next = url.pathname + (url.searchParams.toString() ? "?" + url.searchParams.toString() : "") + url.hash;
+    const currentState = window.history.state;
+    const nextState = mode === "push" && currentState && typeof currentState === "object" &&
+      Number.isInteger(currentState.idx)
+      ? Object.assign({}, currentState, { idx: currentState.idx + 1 })
+      : currentState;
+    if (mode === "push") window.history.pushState(nextState, "", next);
+    else window.history.replaceState(currentState, "", next);
+  }
+
   function withBoard(url, board) {
     // Always append ?board=<slug> when we have one picked — including
     // "default". Omitting the param would fall through to the backend's
@@ -603,7 +626,8 @@
   function KanbanPage() {
     const { t } = useI18n();
     const kanbanDialogs = useKanbanDialogs(t);
-    const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    const initialRoute = useMemo(readKanbanRoute, []);
+    const [board, setBoard] = useState(() => initialRoute.board || readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
@@ -628,7 +652,7 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
-    const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const [selectedTaskId, setSelectedTaskId] = useState(() => initialRoute.task);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
@@ -640,6 +664,43 @@
     // own task's counter so it reloads itself on live events instead of
     // showing stale data.
     const [taskEventTick, setTaskEventTick] = useState({});
+
+    const openTask = useCallback(function (taskId) {
+      setSelectedTaskId(taskId);
+      writeKanbanRoute(board, taskId, "push");
+    }, [board]);
+
+    const closeTask = useCallback(function () {
+      setSelectedTaskId(null);
+      writeKanbanRoute(board, null, "replace");
+    }, [board]);
+
+    useEffect(function () {
+      function syncTaskFromRoute() {
+        const route = readKanbanRoute();
+        if (route.board && route.board !== board) {
+          setBoardData(null);
+          cursorRef.current = 0;
+          setLoading(true);
+          setBoard(route.board);
+          writeSelectedBoard(route.board);
+          setSearch("");
+          setTenantFilter("");
+          setAssigneeFilter("");
+          setIncludeArchived(false);
+          setSelectedIds(new Set());
+          setLastSelectedId(null);
+          setFailedIds(new Set());
+        }
+        setSelectedTaskId(route.task);
+      }
+      window.addEventListener("popstate", syncTaskFromRoute);
+      return function () { window.removeEventListener("popstate", syncTaskFromRoute); };
+    }, [board]);
+
+    useEffect(function () {
+      if (board) writeSelectedBoard(board);
+    }, [board]);
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
@@ -1154,6 +1215,8 @@
       setAssigneeFilter("");
       setIncludeArchived(false);
       clearSelected();
+      setSelectedTaskId(null);
+      writeKanbanRoute(nextSlug, null, "replace");
     }, [board, clearSelected]);
 
     const createNewBoard = useCallback(function (payload) {
@@ -1283,7 +1346,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1328,15 +1391,15 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          onClose: closeTask,
+          onOpenTask: openTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
