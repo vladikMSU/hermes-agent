@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from hermes_cli import kanban_db as kb
 from hermes_cli.dashboard_auth import TokenPrincipal
 from hermes_cli.dashboard_auth.token_auth import is_token_route
+from hermes_cli import kanban_db_connect as kbc
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +160,7 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
         json={"title": "wait for indexed data", "assignee": "ops"},
     ).json()["task"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         with kb.write_txn(conn):
             conn.execute(
@@ -236,7 +237,7 @@ def test_task_detail_includes_links_and_events(client):
 def test_owner_snapshot_returns_bounded_creation_receipts_with_exact_provenance(
     client, kanban_home,
 ):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         root_id = kb.create_task(
             conn, title="Reviewed semantic root", created_by="agent:main",
@@ -279,7 +280,7 @@ def test_owner_snapshot_returns_bounded_creation_receipts_with_exact_provenance(
 
 
 def test_owner_contract_excludes_non_contract_creation_payload(client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent_id = kb.create_task(
             conn, title="parent", created_by="agent:main",
@@ -416,7 +417,7 @@ def test_owner_events_advance_stable_cursor_and_emit_only_materialization_receip
     ).json()
     cursor = initial["event_cursor"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         with kb.write_txn(conn):
             kb._append_event(conn, created["id"], "commented", {"len": 4})
@@ -465,7 +466,7 @@ def test_owner_events_emit_a_durable_tombstone_after_hard_delete(client):
     before = client.get(
         "/api/plugins/kanban/owner-snapshot?board=default&limit=10"
     ).json()["event_cursor"]
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.delete_task(conn, created["id"])
     finally:
@@ -501,7 +502,7 @@ def test_owner_events_emit_a_durable_tombstone_after_archived_delete(client):
     task = client.post(
         "/api/plugins/kanban/tasks", json={"title": "archived temporary"},
     ).json()["task"]
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.archive_task(conn, task["id"])
         cursor = client.get(
@@ -521,13 +522,13 @@ def test_owner_events_emit_a_durable_tombstone_after_archived_delete(client):
 
 
 def test_owner_snapshot_represents_unknown_legacy_provenance(kanban_home, client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         legacy_id = kb.create_task(conn, title="legacy", created_by=None)
         with kb.write_txn(conn):
             conn.execute("DELETE FROM task_events WHERE task_id = ?", (legacy_id,))
             conn.execute("DELETE FROM owner_events WHERE task_id = ?", (legacy_id,))
-            kb._backfill_owner_events(conn)
+            kbc._backfill_owner_events(conn)
     finally:
         conn.close()
 
@@ -543,7 +544,7 @@ def test_owner_snapshot_represents_unknown_legacy_provenance(kanban_home, client
 
 
 def test_owner_snapshot_collapses_duplicate_legacy_creation_events(kanban_home, client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         legacy_id = kb.create_task(conn, title="legacy duplicate", created_by="importer")
         with kb.write_txn(conn):
@@ -553,7 +554,7 @@ def test_owner_snapshot_collapses_duplicate_legacy_creation_events(kanban_home, 
                 (legacy_id, json.dumps({"by": "duplicate"}), int(time.time())),
             )
             conn.execute("DELETE FROM owner_events WHERE task_id = ?", (legacy_id,))
-            kb._backfill_owner_events(conn)
+            kbc._backfill_owner_events(conn)
     finally:
         conn.close()
 
@@ -568,7 +569,7 @@ def test_owner_snapshot_collapses_duplicate_legacy_creation_events(kanban_home, 
 
 
 def test_owner_snapshot_scrubs_preexisting_raw_owner_payload(kanban_home, client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="legacy owner row", created_by="importer")
         with kb.write_txn(conn):
@@ -615,7 +616,7 @@ def test_owner_snapshot_scrubs_preexisting_raw_owner_payload(kanban_home, client
 def test_owner_backfill_never_commits_raw_payload_before_scrub(
     kanban_home, monkeypatch,
 ):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="legacy backfill", created_by="importer")
         with kb.write_txn(conn):
@@ -637,9 +638,9 @@ def test_owner_backfill_never_commits_raw_payload_before_scrub(
         def fail_scrub(_conn):
             raise RuntimeError("simulated scrub interruption")
 
-        monkeypatch.setattr(kb, "_scrub_owner_event_payloads", fail_scrub)
+        monkeypatch.setattr(kbc, "_scrub_owner_event_payloads", fail_scrub)
         with pytest.raises(RuntimeError, match="simulated scrub interruption"):
-            kb._backfill_owner_events(conn)
+            kbc._backfill_owner_events(conn)
 
         row = conn.execute(
             "SELECT payload FROM owner_events WHERE task_id = ? AND kind = 'created'",
@@ -654,7 +655,7 @@ def test_owner_backfill_never_commits_raw_payload_before_scrub(
 
 
 def test_owner_response_reapplies_payload_allowlist(client, monkeypatch):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="unsafe stored row", created_by="importer")
         with kb.write_txn(conn):
@@ -680,7 +681,7 @@ def test_owner_response_reapplies_payload_allowlist(client, monkeypatch):
     finally:
         conn.close()
 
-    monkeypatch.setattr(kb, "_scrub_owner_event_payloads", lambda _conn: None)
+    monkeypatch.setattr(kbc, "_scrub_owner_event_payloads", lambda _conn: None)
     response = client.get(
         "/api/plugins/kanban/owner-events?board=default&after=0&limit=20"
     )
@@ -696,7 +697,7 @@ def test_owner_response_reapplies_payload_allowlist(client, monkeypatch):
 
 
 def test_owner_response_handles_non_utf8_payload_fail_closed(client, monkeypatch):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="binary stored row", created_by="importer")
         with kb.write_txn(conn):
@@ -708,7 +709,7 @@ def test_owner_response_handles_non_utf8_payload_fail_closed(client, monkeypatch
     finally:
         conn.close()
 
-    monkeypatch.setattr(kb, "_scrub_owner_event_payloads", lambda _conn: None)
+    monkeypatch.setattr(kbc, "_scrub_owner_event_payloads", lambda _conn: None)
     response = client.get(
         "/api/plugins/kanban/owner-snapshot?board=default&limit=10"
     )
@@ -762,7 +763,7 @@ def test_owner_events_ignore_body_only_edits(client):
 
 
 def test_owner_events_ignore_completed_result_edits(client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(conn, title="Completed", created_by="agent:main")
         with kb.write_txn(conn):
@@ -773,7 +774,7 @@ def test_owner_events_ignore_completed_result_edits(client):
         "/api/plugins/kanban/owner-snapshot?board=default&limit=10"
     ).json()["event_cursor"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.edit_completed_task_result(
             conn,
@@ -799,7 +800,7 @@ def test_owner_events_ignore_completed_result_edits(client):
 
 
 def test_owner_events_publish_title_changes_from_triage_specification(client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(
             conn, title="Draft", triage=True, created_by="agent:main",
@@ -810,7 +811,7 @@ def test_owner_events_publish_title_changes_from_triage_specification(client):
         "/api/plugins/kanban/owner-snapshot?board=default&limit=10"
     ).json()["event_cursor"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.specify_triage_task(conn, task_id, title="Specified")
     finally:
@@ -829,7 +830,7 @@ def test_owner_events_publish_restoration_after_unarchive(client):
     task = client.post(
         "/api/plugins/kanban/tasks", json={"title": "Restore me"},
     ).json()["task"]
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.archive_task(conn, task["id"])
     finally:
@@ -856,7 +857,7 @@ def test_owner_snapshot_retains_archived_receipts_for_provenance_audit(client):
     task = client.post(
         "/api/plugins/kanban/tasks", json={"title": "Archived topology node"},
     ).json()["task"]
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.archive_task(conn, task["id"])
     finally:
@@ -892,7 +893,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "review"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         run = kb.latest_run(conn, task["id"])
         assert run is not None
         assert run.outcome == "review_requested"
@@ -916,7 +917,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "ready"
     assert response.json()["task"]["assignee"] == "builder"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert any(
             event.kind == "review_reopened"
             for event in kb.list_events(conn, task["id"])
@@ -961,7 +962,7 @@ def test_reopening_parent_demotes_ready_child(client):
 
 
 def test_reopening_parent_retracts_review_and_blocks_approval(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent", assignee="planner")
         assert kb.complete_task(conn, parent_id)
         child_id = kb.create_task(
@@ -993,7 +994,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         assert child is not None
         assert child.status == "todo"
@@ -1012,7 +1013,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         assert child is not None
         assert child.status == "review"
@@ -1030,7 +1031,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 
 
 def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="root", assignee="planner")
         assert kb.complete_task(conn, parent_id)
         child_id = kb.create_task(
@@ -1055,7 +1056,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         grandchild = kb.get_task(conn, grandchild_id)
         assert child is not None and child.status == "todo"
@@ -1071,7 +1072,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
         json={"status": "done"},
     )
     assert response.status_code == 200, response.text
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         grandchild = kb.get_task(conn, grandchild_id)
         assert child is not None and child.status == "ready"
@@ -1079,7 +1080,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
 
 
 def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="active review", assignee="reviewer")
         implementation = kb.claim_task(conn, task_id)
         assert implementation is not None
@@ -1099,7 +1100,7 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "review"
     assert response.json()["task"]["assignee"] == "reviewer"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         run = kb.latest_run(conn, task_id)
         assert run is not None
         assert run.outcome == "reclaimed"
@@ -1188,7 +1189,7 @@ def test_dispatch_dry_run(client):
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     """Loopback mode: a missing or wrong ?token= must be rejected with
     policy-violation; the correct token is accepted. The kanban WS now
-    delegates to web_server._ws_auth_ok, so we stub that with the real
+    delegates to web_server_chat._ws_auth_ok, so we stub that with the real
     loopback-token semantics (auth_required False → constant-time token
     compare)."""
     home = tmp_path / ".hermes"
@@ -1197,7 +1198,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    # Stub web_server with a loopback-mode _ws_auth_ok (auth_required False →
+    # Stub web_server_chat with a loopback-mode _ws_auth_ok (auth_required False →
     # accept only the correct ?token=). Mirrors the real gate's loopback path.
     import hermes_cli
     import types
@@ -1209,8 +1210,8 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         _SESSION_TOKEN="secret-xyz",
         _ws_auth_ok=_fake_ws_auth_ok,
     )
-    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
-    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
+    monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
@@ -1290,7 +1291,7 @@ def test_bulk_review_assignment_preserves_implementer_provenance(client):
     )
     assert response.status_code == 200, response.text
     assert all(item["ok"] for item in response.json()["results"])
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         for task in tasks:
             current = kb.get_task(conn, task["id"])
             assert current is not None
@@ -1322,7 +1323,7 @@ def test_bulk_status_done_forwards_completion_summary(client):
 
     assert r.status_code == 200
     assert all(r["ok"] for r in r.json()["results"])
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         for tid in (a["id"], b["id"]):
             task = kb.get_task(conn, tid)
@@ -1627,7 +1628,8 @@ def test_event_dict_includes_run_id(client):
     r = client.post("/api/plugins/kanban/tasks", json={"title": "e", "assignee": "worker"})
     tid = r.json()["task"]["id"]
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         kb.claim_task(conn, tid)
         run_id = kb.latest_run(conn, tid).id
@@ -1725,7 +1727,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
     """POST /tasks/<id>/reclaim drops the claim, returns ok, and emits
     a manual reclaimed event."""
     import secrets
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="running", assignee="x")
         lock = secrets.token_hex(8)
@@ -1756,7 +1758,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
     assert body["task_id"] == t
 
     # Confirm the task is back to ready.
-    conn2 = kb.connect()
+    conn2 = kbc.connect()
     try:
         row = conn2.execute(
             "SELECT status, claim_lock FROM tasks WHERE id=?", (t,),
@@ -1769,7 +1771,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
 
 def test_reassign_endpoint_switches_profile(client):
     """POST /tasks/<id>/reassign changes the assignee field."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="task", assignee="orig")
     finally:
@@ -1782,7 +1784,7 @@ def test_reassign_endpoint_switches_profile(client):
     assert r.status_code == 200, r.text
     assert r.json()["assignee"] == "newbie"
 
-    conn2 = kb.connect()
+    conn2 = kbc.connect()
     try:
         row = conn2.execute(
             "SELECT assignee FROM tasks WHERE id=?", (t,),
@@ -1798,7 +1800,7 @@ def test_reassign_endpoint_switches_profile(client):
 
 
 def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent = kb.create_task(conn, title="parent", assignee="alice")
         real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
